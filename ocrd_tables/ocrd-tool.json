@@ -1,0 +1,22 @@
+{
+  "version": "0.1.0",
+  "tools": {
+    "ocrd-tables": {
+      "executable": "ocrd-tables",
+      "description": "Fuse column regions and text lines into table cell TextRegions using DBSCAN (no ReadingOrder).",
+      "input_file_grps": ["OCR-D-SEG-COLUMN", "OCR-D-SEG-TEXTLINE-TABLE"],
+      "input_file_grp_regex": ".*",
+      "output_file_grps": ["OCR-D-TABLE-CELLS"],
+      "steps": ["segmentation/region", "segmentation/line"],
+      "parameters": {
+        "col_pad_frac":       { "type": "number", "default": 0.02, "description": "Horizontal padding added to each column band as a fraction of table width." },
+        "split_min_len_px":   { "type": "number", "default": 8,    "description": "Discard fragments shorter than this after splitting at column borders." },
+        "dbscan_eps":         { "type": "number", "default": 0.6,  "description": "DBSCAN eps in units of estimated line spacing." },
+        "dbscan_min_samples": { "type": "number", "default": 2,    "description": "DBSCAN min_samples." },
+        "row_halfspan":       { "type": "number", "default": 0.5,  "description": "Half a row's vertical band in units of spacing (0.5 -> ±0.5*S)." },
+        "header_top_frac":    { "type": "number", "default": 0.12, "description": "Top fraction of table considered header (enables colSpan, no split)." },
+        "keep_noise_rows":    { "type": "boolean","default": true, "description": "Keep DBSCAN noise as singleton rows (otherwise attach to nearest row)." }
+      }
+    }
+  }
+}

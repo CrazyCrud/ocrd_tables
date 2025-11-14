@@ -1,0 +1,12 @@
+[project]
+name = "ocrd-tables"
+version = "0.1.0"
+description = "OCR-D processor to fuse YOLO columns and textlines into table cells via DBSCAN"
+requires-python = ">=3.9"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[project.scripts]
+ocrd-tables = "ocrd_tables.processor:cli"

@@ -1,0 +1,46 @@
+services:
+  ocrd-tables:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DOCKER_BASE_IMAGE: ocrd/core-cuda-torch:latest
+        VCS_REF: ${VCS_REF:-main}
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}
+    image: ocrd/tables:latest
+    container_name: ocrd-tables
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: /bin/bash
+    stdin_open: true
+    tty: true
+
+  # CPU-only version
+  ocrd-tables-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DOCKER_BASE_IMAGE: ocrd/core:latest
+        VCS_REF: ${VCS_REF:-main}
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}
+    image: ocrd/tables:cpu
+    container_name: ocrd-tables-cpu
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    environment:
+      - CUDA_VISIBLE_DEVICES=""  # ensure no GPU is used
+    command: /bin/bash
+    stdin_open: true
+    tty: true
