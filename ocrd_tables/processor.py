@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 from datetime import datetime
 from ocrd import Processor
-from ocrd_utils import MIMETYPE_PAGE, getLogger, assert_file_grp_cardinality, concat_padded
-from ocrd_models.ocrd_page import PcGtsType, parse as page_parse
+from ocrd_utils import MIMETYPE_PAGE, getLogger, assert_file_grp_cardinality
+from ocrd_models.ocrd_page import PcGtsType, parse as page_parse, to_xml
+from ocrd_utils.str import make_file_id
 
 from .fusion import fuse_page
 
@@ -15,7 +16,7 @@ class OcrdTables(Processor):
     def process(self):
         # multiple input groups: comma-separated list in -I
         in_grps = [g.strip() for g in self.input_file_grp.split(",") if g.strip()]
-        assert_file_grp_cardinality(self.input_file_grp, min=2)
+        assert_file_grp_cardinality(self.input_file_grp, n=2)
 
         out_grp = self.output_file_grp
         params = dict(self.parameter)
@@ -57,12 +58,15 @@ class OcrdTables(Processor):
                 md.set_lastChange(datetime.now().isoformat())
 
             # store
-            file_id = concat_padded(out_grp, n=0)
-            out_xml = f"{file_id}.xml"
-            fused_doc.to_file(out_xml)
+            src_file = pages[grp_lines]  # or pages[grp_cols]
+            file_id = make_file_id(src_file, out_grp)
+            xml_bytes = to_xml(fused_doc)
             self.workspace.add_file(
-                file_grp=out_grp, page_id=page_id, ID=file_id,
-                mimetype=MIMETYPE_PAGE, local_filename=out_xml
+                file_grp=out_grp,
+                page_id=page_id,
+                ID=file_id,
+                mimetype=MIMETYPE_PAGE,
+                content=xml_bytes
             )
 
 

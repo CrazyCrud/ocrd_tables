@@ -1,3 +1,4 @@
+click
 ocrd >= 3.0.2
 numpy
 shapely
