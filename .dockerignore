@@ -21,6 +21,7 @@ env/
 .venv/
 .env/
 ENV/
+.venv_ocrd_tables
 
 # Testing
 .tox/

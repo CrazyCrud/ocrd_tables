@@ -58,6 +58,7 @@ coverage.xml
 .venv/
 env/
 venv/
+.venv_ocrd_tables/
 
 # Tests
 tests/example.json
