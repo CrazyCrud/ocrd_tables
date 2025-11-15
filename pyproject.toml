@@ -8,5 +8,12 @@ dynamic = ["dependencies"]
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 
+[tool.setuptools]
+packages = ["ocrd_tables"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+ocrd_tables = ["*.json", "ocrd-tool.json"]
+
 [project.scripts]
-ocrd-tables = "ocrd_tables.processor:cli"
+ocrd-tables = "ocrd_tables.cli:ocrd_tables"
