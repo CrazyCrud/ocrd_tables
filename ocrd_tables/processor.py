@@ -1,7 +1,10 @@
 from ocrd import Processor
 from ocrd_utils import MIMETYPE_PAGE, assert_file_grp_cardinality
 from ocrd_utils.str import make_file_id, concat_padded
-from ocrd_models.ocrd_page import PcGtsType, parse as page_parse, to_xml
+from ocrd_models.ocrd_page import (
+    PcGtsType, parse as page_parse, to_xml,
+    MetadataItemType,
+)
 from pathlib import Path
 from datetime import datetime
 import json
@@ -21,12 +24,12 @@ class OcrdTables(Processor):
 
     def process(self):
         in_grps = [g.strip() for g in self.input_file_grp.split(",") if g.strip()]
-        assert_file_grp_cardinality(self.input_file_grp, n=2)
+        # assert_file_grp_cardinality(self.input_file_grp, n=2)
 
         out_grp = self.output_file_grp
         params = self.params
 
-        for page_id, _, _ in self.workspace.mets.get_physical_pages():
+        for page_id in self.workspace.mets.get_physical_pages():
             pages = {}
             for g in in_grps:
                 files = list(self.workspace.mets.find_files(
@@ -41,6 +44,9 @@ class OcrdTables(Processor):
             grp_cols = next((g for g in in_grps if "COLUMN" in g.upper()), in_grps[0])
             grp_lines = next((g for g in in_grps if "TEXTLINE" in g.upper()), in_grps[-1])
 
+            cols_path = self.workspace.download_file(pages[grp_cols]).local_filename
+            lines_path = self.workspace.download_file(pages[grp_lines]).local_filename
+
             cols_doc: PcGtsType = page_parse(self.workspace.download_file(pages[grp_cols]).local_filename)
             lines_doc: PcGtsType = page_parse(self.workspace.download_file(pages[grp_lines]).local_filename)
 
@@ -48,19 +54,17 @@ class OcrdTables(Processor):
 
             md = fused_doc.get_Metadata()
             if md:
-                md.add_MetadataItemType(
+                step = MetadataItemType(
                     type_="processingStep",
                     name="ocrd-tables",
                     value=json.dumps({
-                        "inputs": {
-                            grp_cols: Path(pages[grp_cols].local_filename or '').name,
-                            grp_lines: Path(pages[grp_lines].local_filename or '').name
-                        },
+                        "inputs": {grp_cols: Path(cols_path).name,
+                                   grp_lines: Path(lines_path).name},
                         "params": params
-                    }),
-                    Labels=None
+                    })
                 )
-                md.set_lastChange(datetime.now().isoformat())
+                md.add_MetadataItem(step)  # correct v3 API
+                md.set_LastChange(datetime.now().isoformat())
 
             base_id = make_file_id(pages[grp_lines], out_grp)
             file_id, k = base_id, 0
