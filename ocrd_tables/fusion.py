@@ -129,7 +129,7 @@ def _collect_column_bands_nested_only(tbl_in_cols: TableRegionType | None,
                     cpoly = poly_from_coords(child.get_Coords())
                     inter = cpoly.intersection(tbl_poly)
                     if not inter.is_empty and inter.area > 0:
-                        a, _, b, _ = cpoly.bounds
+                        a, _, b, _ = inter.bounds
                         col_regions.append((a, b))
 
     if not col_regions:
@@ -137,8 +137,11 @@ def _collect_column_bands_nested_only(tbl_in_cols: TableRegionType | None,
         col_regions = [(x1t, x2t)]
 
     col_regions = sorted(col_regions, key=lambda ab: ab[0])
-    pad = col_pad_frac * (x2t - x1t)
-    bands = [(max(x1t, a - pad), min(x2t, b + pad)) for (a, b) in col_regions]
+    bands = []
+    for (a, b) in col_regions:
+        col_w = b - a
+        pad = col_pad_frac * col_w  # <--- fraction of this column, not of whole table
+        bands.append((max(x1t, a - pad), min(x2t, b + pad)))
     borders = [(bands[k][1] + bands[k + 1][0]) / 2.0 for k in range(len(bands) - 1)]
     return bands, borders
 
@@ -318,6 +321,11 @@ def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: 
 
         for row_idx, (lab, y_top, y_bot, item_idxs) in enumerate(rows):
             by_col: Dict[int, List[int]] = {}
+
+            for j in range(len(bands)):
+                count = len(by_col.get(j, []))
+                print(f"row {row_idx}, col {j}: {count} lines")
+
             for i in item_idxs:
                 col_i, geom_i, tl_i, src_reg = assigned[i]
                 if isinstance(col_i, tuple) and len(col_i) == 3 and col_i[2] == "span":

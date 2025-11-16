@@ -18,7 +18,7 @@
 
         "snap_eps_S":         { "type": "number",  "default": 0.35, "description": "Tolerance for snapping line y to row anchors, as a fraction of spacing S." },
         "merge_factor":       { "type": "number",  "default": 0.6,  "description": "If two adjacent row bands overlap by ≥ this fraction, merge them." },
-        "row_requires_line":  { "type": "boolean", "default": true, "description": "Emit a row only if at least one line snaps into it." },
+        "row_requires_line":  { "type": "boolean", "default": false, "description": "Emit a row only if at least one line snaps into it." },
         "keep_noise_rows":    { "type": "boolean", "default": false,"description": "Keep unassigned lines as singleton rows instead of attaching to nearest." },
 
         "dbscan_eps":         { "type": "number",  "default": 0.6,  "description": "DBSCAN eps in units of spacing S (if fallback is enabled)." },
