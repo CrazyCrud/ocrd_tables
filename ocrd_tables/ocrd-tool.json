@@ -4,6 +4,10 @@
     "ocrd-tables": {
       "executable": "ocrd-tables",
       "description": "Fuse column regions and text lines into table cell TextRegions using DBSCAN (no ReadingOrder).",
+      "steps": [
+        "layout/segmentation/region",
+        "layout/analysis"
+      ],
       "input_file_grp_cardinality": 2,
       "output_file_grp_cardinality": 1,
       "parameters": {

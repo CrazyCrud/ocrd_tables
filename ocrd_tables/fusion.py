@@ -5,9 +5,8 @@ from shapely.geometry import Polygon, LineString, box
 from sklearn.cluster import DBSCAN
 from ocrd_models.ocrd_page import (
     PcGtsType, PageType, RolesType, TableRegionType, TextRegionType, TextLineType,
-    CoordsType, TableCellRoleType
+    CoordsType, TableCellRoleType, parseString, to_xml
 )
-
 from .geometry import poly_from_coords, coords_from_poly, line_from_points, split_line_by_x
 
 
@@ -170,25 +169,32 @@ def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: 
     page_cols: PageType = cols_doc.get_Page()
     page_lines: PageType = lines_doc.get_Page()
 
-    tables = page_lines.get_TableRegion() or []
-    if not tables:
-        return lines_doc
+    xml_bytes = to_xml(lines_doc)
+    xml_blob = to_xml(lines_doc)  # may be str or bytes depending on version
+    if isinstance(xml_blob, str):
+        xml_blob = xml_blob.encode("utf-8")  # <-- ensure bytes for parseString
+    out_doc = parseString(xml_blob)
+    out_page = out_doc.get_Page()
 
-    import copy
-    out_doc: PcGtsType = copy.deepcopy(lines_doc)
-    out_page: PageType = out_doc.get_Page()
+    tables = out_page.get_TableRegion() or []
+    if not tables:
+        return out_doc  # or return lines_doc, but be consistent
 
     for tbl in tables:
+        # everything below now mutates `tbl` from `out_doc`
         tbl_poly = poly_from_coords(tbl.get_Coords())
         x1t, y1t, x2t, y2t = tbl_poly.bounds
         width, height = (x2t - x1t), (y2t - y1t)
 
-        # 1) match this table in columns PAGE, and collect nested column bands
+        # columns still come from cols_doc (that’s fine)
         tbl_in_cols = _match_table_in_cols(page_cols, tbl_poly, getattr(tbl, "id", None))
-        bands, borders = _collect_column_bands_nested_only(tbl_in_cols, tbl_poly, x1t, x2t, col_pad_frac)
+        bands, borders = _collect_column_bands_nested_only(
+            tbl_in_cols, tbl_poly, x1t, x2t, col_pad_frac
+        )
+
         header_y_cut = y1t + header_top_frac * height
 
-        # 2) collect textlines (children of inner TextRegion inside this TableRegion)
+        # collect lines FROM THE SAME TABLE IN out_doc
         lines = []
         for reg in tbl.get_TextRegion():
             for tl in reg.get_TextLine():
@@ -305,12 +311,13 @@ def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: 
 
                 cell = TextRegionType()
                 cell.set_Coords(CoordsType(points=coords_from_poly(cell_rect)))
-                role = TableCellRoleType(rowIndex=int(row_idx), columnIndex=int(j))
-                roles = RolesType(TableCellRole=role)
+                roles = RolesType(TableCellRole=TableCellRoleType(
+                    rowIndex=int(row_idx), columnIndex=int(j)
+                ))
                 cell.set_Roles(roles)
                 tbl.add_TextRegion(cell)
 
-                for i in by_col.get(j, []):
+            for i in by_col.get(j, []):
                     _, geom_i, tl_i = assigned[i]
                     y_val, _ = _line_y_and_xspan(geom_i)
                     if y_top <= y_val <= y_bot:
