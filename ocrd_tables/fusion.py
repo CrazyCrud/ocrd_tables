@@ -10,8 +10,6 @@ from ocrd_models.ocrd_page import (
 from .geometry import poly_from_coords, coords_from_poly, line_from_points, split_line_by_x
 
 
-# ------------------------------ spacing / anchors ----------------------------
-
 def _robust_spacing(y_vals: np.ndarray, fallback: float = 20.0) -> float:
     if y_vals.size < 3:
         return fallback
@@ -90,8 +88,6 @@ def _line_y_and_xspan(geom) -> Tuple[float, float]:
     return y_med, x_span
 
 
-# ------------------------------ table matching / columns ---------------------
-
 def _match_table_in_cols(cols_page: PageType, tbl_poly: Polygon, tbl_id: str | None):
     """
     Match the corresponding TableRegion in the columns PAGE:
@@ -133,7 +129,7 @@ def _collect_column_bands_nested_only(tbl_in_cols: TableRegionType | None,
                     cpoly = poly_from_coords(child.get_Coords())
                     inter = cpoly.intersection(tbl_poly)
                     if not inter.is_empty and inter.area > 0:
-                        a, _, b, _ = inter.bounds
+                        a, _, b, _ = cpoly.bounds
                         col_regions.append((a, b))
 
     if not col_regions:
@@ -147,29 +143,109 @@ def _collect_column_bands_nested_only(tbl_in_cols: TableRegionType | None,
     return bands, borders
 
 
-# ------------------------------ main fusion ----------------------------------
+def _prune_anchors(anchors: np.ndarray, S: float, merge_factor: float = 0.6) -> np.ndarray:
+    """Keep anchors separated by at least merge_factor * S."""
+    if anchors.size == 0:
+        return anchors
+    anchors = np.sort(anchors)
+    min_gap = max(merge_factor * S, 1.0)
+    kept = [anchors[0]]
+    for a in anchors[1:]:
+        if a - kept[-1] >= min_gap:
+            kept.append(a)
+    return np.asarray(kept, dtype=float)
+
+
+def cluster_rows(assigned, y1t: float, y2t: float, row_height_factor: float):
+    """
+    Cluster textlines into horizontal rows by looking at vertical gaps
+    between their centers.
+
+    Returns list of (row_label, y_top, y_bot, idxs).
+    """
+    if not assigned:
+        return []
+
+    info = []  # (y_center, y_min, y_max, assigned_index)
+    for idx, (_, geom, _, _) in enumerate(assigned):
+        _, gminy, _, gmaxy = geom.bounds
+        y_c = 0.5 * (gminy + gmaxy)
+        info.append((y_c, gminy, gmaxy, idx))
+
+    # sort by vertical position
+    info.sort(key=lambda t: t[0])
+
+    centers = np.array([t[0] for t in info], dtype=float)
+
+    if centers.size == 0:
+        return []
+
+    # estimate typical spacing between lines
+    S = _robust_spacing(centers, fallback=max(10.0, 0.04 * (y2t - y1t)))
+    # threshold for "new row": if gap is big compared to typical spacing
+    gap_thresh = max(0.8 * S, 5.0)  # you can tune 0.8 → 1.0 etc
+
+    rows = []
+    start = 0
+
+    for k in range(len(centers) - 1):
+        gap = centers[k + 1] - centers[k]
+        if gap > gap_thresh:
+            # close current row: [start .. k]
+            seg = info[start:k + 1]
+            ys_min = [s[1] for s in seg]
+            ys_max = [s[2] for s in seg]
+            idxs = [s[3] for s in seg]
+
+            row_min = float(min(ys_min))
+            row_max = float(max(ys_max))
+
+            pad = 0.5 * row_height_factor * S
+            y_top = max(y1t, row_min - pad)
+            y_bot = min(y2t, row_max + pad)
+
+            rows.append((len(rows), y_top, y_bot, idxs))
+            start = k + 1
+
+    # last row segment
+    seg = info[start:]
+    if seg:
+        ys_min = [s[1] for s in seg]
+        ys_max = [s[2] for s in seg]
+        idxs = [s[3] for s in seg]
+
+        row_min = float(min(ys_min))
+        row_max = float(max(ys_max))
+
+        pad = 0.5 * row_height_factor * S
+        y_top = max(y1t, row_min - pad)
+        y_bot = min(y2t, row_max + pad)
+
+        rows.append((len(rows), y_top, y_bot, idxs))
+
+    # rows are already in top→bottom order by construction
+    return rows
+
 
 def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: str):
     """
-    Fuse YOLO columns and textlines into a grid of table cells with TextLines inside.
-    Uses nested columns from the matched TableRegion in the columns PAGE.
-    CluSTi-like anchors; optional DBSCAN fallback; no ReadingOrder.
+    Fuse YOLO columns and textlines into table cells with TextLines inside.
+
+    - Columns from the matched TableRegion in the columns PAGE (nested TextRegion@custom~="column").
+    - Rows from 1D DBSCAN clustering of TextLine vertical positions.
+    - Each cell becomes a TextRegion with TableCell roles (rowIndex, columnIndex).
+    - No ReadingOrder is created/modified.
     """
     # params
     col_pad_frac = float(params.get("col_pad_frac", 0.02))
-    split_min_len_px = float(params.get("split_min_len_px", 8))
-    row_halfspan = float(params.get("row_halfspan", 0.5))
     header_top_frac = float(params.get("header_top_frac", 0.12))
-    keep_noise_rows = bool(params.get("keep_noise_rows", True))
-    snap_eps_S = float(params.get("snap_eps_S", 0.6))
-    use_dbscan_fallback = bool(params.get("use_dbscan_fallback", False))
-    dbscan_eps = float(params.get("dbscan_eps", 0.6))
-    dbscan_min_samples = int(params.get("dbscan_min_samples", 2))
+    row_requires_line = bool(params.get("row_requires_line", False))
+    split_min_len_px = float(params.get("split_min_len_px", 12))
+
+    row_height_factor = float(params.get("row_height_factor", 1.5))
 
     page_cols: PageType = cols_doc.get_Page()
-    page_lines: PageType = lines_doc.get_Page()
 
-    xml_bytes = to_xml(lines_doc)
     xml_blob = to_xml(lines_doc)  # may be str or bytes depending on version
     if isinstance(xml_blob, str):
         xml_blob = xml_blob.encode("utf-8")  # <-- ensure bytes for parseString
@@ -212,19 +288,22 @@ def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: 
                 if not geom.intersects(tbl_poly):
                     continue
                 geom = geom.intersection(tbl_poly)
-                lines.append((tl, geom))
+                # keep (tl, geom, parent_region)
+                lines.append((tl, geom, reg))
 
-        # 3) assign/split by columns
-        assigned: List[Tuple[Any, Any, TextLineType]] = []
-        for tl, geom in lines:
+        # assign/split by columns
+        assigned = []
+        for tl, geom, reg in lines:
             gminx, gminy, gmaxx, _ = geom.bounds
             hits = [j for j, (a, b) in enumerate(bands) if not (gmaxx < a or gminx > b)]
+
             if len(hits) <= 1:
                 j = hits[0] if hits else 0
-                assigned.append((j, geom, tl))
+                assigned.append((j, geom, tl, reg))
             else:
+                # header lines can span without splitting
                 if gminy <= header_y_cut:
-                    assigned.append(((min(hits), max(hits), "span"), geom, tl))
+                    assigned.append(((min(hits), max(hits), "span"), geom, tl, reg))
                 else:
                     frags = split_line_by_x(geom, borders)
                     for fg in frags:
@@ -233,94 +312,63 @@ def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: 
                             continue
                         cx = 0.5 * (fg.bounds[0] + fg.bounds[2])
                         j = int(np.argmin([abs(0.5 * (a + b) - cx) for (a, b) in bands]))
-                        assigned.append((j, fg, tl))
+                        assigned.append((j, fg, tl, reg))
 
-        # 4) anchors / snapping
-        if not assigned:
-            anchors = np.array([0.5 * (y1t + y2t)], float)
-            rows_map = {0: []}
-            spacing = height if height > 1 else 20.0
-        else:
-            y_stats = np.array([_line_y_and_xspan(g)[0] for _, g, _ in assigned], float)
-            spacing = _robust_spacing(y_stats, fallback=max(10.0, 0.04 * height))
-            phase = _phase_from_residuals(y_stats, spacing, y1t, y2t)
-            anchors = _make_anchors(y1t, y2t, spacing, phase)
+        rows = cluster_rows(assigned, y1t, y2t, row_height_factor)
 
-            assigned_map, unassigned = _assign_to_anchors(y_stats, anchors, tol_px=snap_eps_S * spacing)
-            if unassigned:
-                if keep_noise_rows:
-                    noise_rows = {f"noise_{k}": [k] for k in unassigned}
-                else:
-                    for k in unassigned:
-                        aid = int(np.argmin(np.abs(anchors - y_stats[k])))
-                        assigned_map.setdefault(aid, []).append(k)
-                    noise_rows = {}
-            else:
-                noise_rows = {}
-            rows_map = {**assigned_map, **noise_rows}
-
-            if use_dbscan_fallback:
-                try:
-                    fy = y_stats / max(spacing, 1e-6)
-                    labels = DBSCAN(eps=dbscan_eps, min_samples=dbscan_min_samples).fit(fy.reshape(-1, 1)).labels_
-                    for lab in sorted(set(labels) - {-1}):
-                        idxs = np.where(labels == lab)[0].tolist()
-                        rest = [i for i in idxs if not any(i in v for v in rows_map.values())]
-                        if rest:
-                            rows_map[f"db_{lab}"] = rest
-                except Exception:
-                    pass
-
-        # 5) emit cells per row/column
-        def row_key(key):
-            if isinstance(key, int) and 0 <= key < len(anchors):
-                return anchors[key]
-            if isinstance(key, str) and key.startswith(("noise_", "db_")):
-                idxs = rows_map[key]
-                if idxs:
-                    return float(np.median([_line_y_and_xspan(assigned[i][1])[0] for i in idxs]))
-            return 1e18
-
-        ordered_row_keys = sorted(rows_map.keys(), key=row_key)
-
-        for row_idx, rkey in enumerate(ordered_row_keys):
-            if isinstance(rkey, int) and 0 <= rkey < len(anchors):
-                y_med = anchors[rkey]
-            else:
-                idxs = rows_map[rkey]
-                if not idxs:
-                    continue
-                y_med = float(np.median([_line_y_and_xspan(assigned[i][1])[0] for i in idxs]))
-
-            y_top = max(y1t, y_med - row_halfspan * spacing)
-            y_bot = min(y2t, y_med + row_halfspan * spacing)
-
-            items = rows_map[rkey]
+        for row_idx, (lab, y_top, y_bot, item_idxs) in enumerate(rows):
             by_col: Dict[int, List[int]] = {}
-            for i in items:
-                col_i, geom_i, _ = assigned[i]
+            for i in item_idxs:
+                col_i, geom_i, tl_i, src_reg = assigned[i]
                 if isinstance(col_i, tuple) and len(col_i) == 3 and col_i[2] == "span":
                     by_col.setdefault(col_i[0], []).append(i)
                 else:
                     by_col.setdefault(int(col_i), []).append(i)
 
+            moved_ids: set[str] = set()
+
             for j, (a, b) in enumerate(bands):
+                # make the cell polygon inside the table
                 cell_rect = box(a, y_top, b, y_bot).intersection(tbl_poly)
                 if cell_rect.is_empty:
                     continue
 
+                indices = by_col.get(j, [])
+                if row_requires_line and not indices:
+                    # No text in this cell; skip creating the region
+                    continue
+
+                # build CoordsType(points="x,y x,y ...")
+                xys = list(cell_rect.exterior.coords)[:-1]  # drop closing point
+                pts_str = " ".join(f"{int(round(x))},{int(round(y))}" for x, y in xys)
+
                 cell = TextRegionType()
-                cell.set_Coords(CoordsType(points=coords_from_poly(cell_rect)))
+                cell.set_Coords(CoordsType(points=pts_str))
                 roles = RolesType(TableCellRole=TableCellRoleType(
                     rowIndex=int(row_idx), columnIndex=int(j)
                 ))
                 cell.set_Roles(roles)
                 tbl.add_TextRegion(cell)
 
-            for i in by_col.get(j, []):
-                    _, geom_i, tl_i = assigned[i]
+                # move the textlines of this row+column into the cell
+                for i in by_col.get(j, []):
+                    _, geom_i, tl_i, src_reg = assigned[i]
                     y_val, _ = _line_y_and_xspan(geom_i)
-                    if y_top <= y_val <= y_bot:
-                        cell.add_TextLine(tl_i)
+                    if not (y_top <= y_val <= y_bot):
+                        continue
+
+                    tl_id = getattr(tl_i, "id", None) or str(id(tl_i))
+                    if tl_id in moved_ids:
+                        continue
+
+                    # detach from original parent region
+                    try:
+                        src_reg.get_TextLine().remove(tl_i)
+                    except ValueError:
+                        pass
+
+                    # attach to cell
+                    cell.add_TextLine(tl_i)
+                    moved_ids.add(tl_id)
 
     return out_doc

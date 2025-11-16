@@ -37,10 +37,14 @@ def poly_from_coords(coords: CoordsType) -> Polygon:
     return Polygon(xys)
 
 
-def coords_from_poly(poly: Polygon) -> CoordsType:
-    # Drop the last coordinate (duplicate of first)
-    xys = list(poly.exterior.coords)[:-1]
-    return CoordsType(points=points_str_from_xy(xys))
+def coords_from_poly(poly: Polygon) -> str:
+    """
+    Return PAGE-XML 'points' attribute string like 'x1,y1 x2,y2 ...'.
+    """
+    xys = list(poly.exterior.coords)
+    # drop closing duplicate vertex (last point equals first)
+    xys = xys[:-1] if len(xys) > 1 and xys[0] == xys[-1] else xys
+    return " ".join(f"{int(round(x))},{int(round(y))}" for (x, y) in xys)
 
 
 def line_from_points(points: list[tuple[float, float]]) -> LineString:
