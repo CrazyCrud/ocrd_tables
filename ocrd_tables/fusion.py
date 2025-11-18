@@ -21,6 +21,7 @@ def horizontal_clustering_dbscan(
 ) -> List[List[int]]:
     """
     Apply DBSCAN clustering for row detection as described in CluSTi paper.
+    Enhanced for historical documents with variable handwriting.
 
     Args:
         lines: List of (column_id, geometry, textline, region) tuples
@@ -34,74 +35,165 @@ def horizontal_clustering_dbscan(
     if not lines:
         return []
 
-    # Extract y-coordinates (centroids) for each line
+    # Extract y-coordinates (centroids) and heights for each line
     y_coords = []
     line_heights = []
+    line_info = []  # Store additional info for post-processing
 
-    for _, geom, _, _ in lines:
+    for idx, (col_id, geom, _, _) in enumerate(lines):
         if isinstance(geom, LineString):
             ys = [p[1] for p in list(geom.coords)]
             y_center = float(np.median(ys))
             height = max(ys) - min(ys) if len(ys) > 1 else 10
+            y_min, y_max = min(ys), max(ys)
         else:
             bounds = geom.bounds
             y_center = (bounds[1] + bounds[3]) / 2.0
             height = bounds[3] - bounds[1]
+            y_min, y_max = bounds[1], bounds[3]
 
         y_coords.append(y_center)
         line_heights.append(height)
+        line_info.append({
+            'idx': idx,
+            'y_center': y_center,
+            'y_min': y_min,
+            'y_max': y_max,
+            'height': height,
+            'col_id': col_id
+        })
 
     y_coords = np.array(y_coords).reshape(-1, 1)
 
     # Calculate eps as median height (Algorithm 2 from CluSTi)
     median_height = np.median(line_heights) if line_heights else 20
 
-    # Fine-tune eps using density distribution (Section 4.3.2 of CluSTi)
-    eps_values = np.linspace(0.1 * median_height, 2.0 * median_height, 50)
-    num_clusters = []
+    # For historical documents, we need to be more conservative
+    # Use a larger eps to avoid over-segmentation
+    base_eps = median_height * eps_factor
 
-    for eps in eps_values:
-        clustering = DBSCAN(eps=eps, min_samples=min_samples)
-        labels = clustering.fit_predict(y_coords)
-        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-        num_clusters.append(n_clusters)
-
-    # Find peaks in the density distribution
-    # Simple peak detection: look for local maxima in cluster counts
-    peaks = []
-    for i in range(1, len(num_clusters) - 1):
-        if num_clusters[i] >= num_clusters[i - 1] and num_clusters[i] >= num_clusters[i + 1]:
-            peaks.append((eps_values[i], num_clusters[i]))
-
-    # Choose the eps corresponding to the highest peak
-    if peaks:
-        # Sort by number of clusters (descending)
-        peaks.sort(key=lambda x: x[1], reverse=True)
-        best_eps = peaks[0][0]
+    # Try to estimate the actual row spacing
+    # Sort y-coordinates and look at gaps
+    y_sorted = np.sort(y_coords.flatten())
+    if len(y_sorted) > 1:
+        gaps = np.diff(y_sorted)
+        # Filter out very small gaps (likely within same row)
+        significant_gaps = gaps[gaps > median_height * 0.5]
+        if len(significant_gaps) > 0:
+            # Use the smaller gaps as indication of row spacing
+            row_spacing = np.percentile(significant_gaps, 25)
+            # eps should be smaller than typical row spacing but larger than within-row variation
+            best_eps = min(base_eps, row_spacing * 0.7)
+        else:
+            best_eps = base_eps
     else:
-        best_eps = median_height * eps_factor
+        best_eps = base_eps
 
-    # Apply DBSCAN with the best eps
+    # Apply DBSCAN with the calculated eps
     clustering = DBSCAN(eps=best_eps, min_samples=min_samples)
     labels = clustering.fit_predict(y_coords)
 
     # Group line indices by cluster label
     rows = {}
     for idx, label in enumerate(labels):
-        if label != -1:  # Ignore noise points
+        if label != -1:  # Ignore noise points initially
             if label not in rows:
                 rows[label] = []
             rows[label].append(idx)
 
+    # Post-process: merge rows that are too close or have overlapping y-ranges
+    merged_rows = []
+    for label in sorted(rows.keys()):
+        indices = rows[label]
+        # Get y-range for this cluster
+        y_mins = [line_info[i]['y_min'] for i in indices]
+        y_maxs = [line_info[i]['y_max'] for i in indices]
+        cluster_y_min = min(y_mins)
+        cluster_y_max = max(y_maxs)
+
+        # Check if this cluster should be merged with an existing row
+        merged = False
+        for existing_row in merged_rows:
+            existing_y_mins = [line_info[i]['y_min'] for i in existing_row]
+            existing_y_maxs = [line_info[i]['y_max'] for i in existing_row]
+            existing_y_min = min(existing_y_mins)
+            existing_y_max = max(existing_y_maxs)
+
+            # Check for overlap or very close proximity
+            overlap = not (cluster_y_max < existing_y_min or cluster_y_min > existing_y_max)
+            close = abs(cluster_y_min - existing_y_max) < median_height * 0.3 or \
+                    abs(existing_y_min - cluster_y_max) < median_height * 0.3
+
+            if overlap or close:
+                # Merge with existing row
+                existing_row.extend(indices)
+                merged = True
+                break
+
+        if not merged:
+            merged_rows.append(indices)
+
+    # Handle noise points - assign to nearest row if close enough
+    noise_indices = [idx for idx, label in enumerate(labels) if label == -1]
+    for idx in noise_indices:
+        y_center = line_info[idx]['y_center']
+        best_row = None
+        best_distance = median_height  # Max distance to consider
+
+        for row_indices in merged_rows:
+            row_y_centers = [line_info[i]['y_center'] for i in row_indices]
+            avg_y = np.mean(row_y_centers)
+            distance = abs(y_center - avg_y)
+
+            if distance < best_distance:
+                best_distance = distance
+                best_row = row_indices
+
+        if best_row is not None:
+            best_row.append(idx)
+
     # Sort rows by average y-coordinate (top to bottom)
     sorted_rows = []
-    for label in rows:
-        avg_y = np.mean([y_coords[i][0] for i in rows[label]])
-        sorted_rows.append((avg_y, rows[label]))
+    for indices in merged_rows:
+        avg_y = np.mean([y_coords[i][0] for i in indices])
+        sorted_rows.append((avg_y, indices))
 
     sorted_rows.sort(key=lambda x: x[0])
 
-    return [indices for _, indices in sorted_rows]
+    # Additional validation: merge rows that have the same columns represented
+    final_rows = []
+    for _, indices in sorted_rows:
+        # Check column distribution
+        cols_in_row = set()
+        for i in indices:
+            col_id = line_info[i]['col_id']
+            if isinstance(col_id, int):
+                cols_in_row.add(col_id)
+
+        # Try to merge with previous row if they share many columns
+        if final_rows and len(cols_in_row) > 0:
+            last_row_indices = final_rows[-1]
+            last_row_cols = set()
+            for i in last_row_indices:
+                col_id = line_info[i]['col_id']
+                if isinstance(col_id, int):
+                    last_row_cols.add(col_id)
+
+            # If significant column overlap, consider merging
+            overlap = cols_in_row.intersection(last_row_cols)
+            if len(overlap) > len(cols_in_row) * 0.5:
+                # Check vertical distance
+                last_y = np.mean([line_info[i]['y_center'] for i in last_row_indices])
+                curr_y = np.mean([line_info[i]['y_center'] for i in indices])
+
+                if abs(curr_y - last_y) < median_height * 1.5:
+                    # Merge with previous row
+                    final_rows[-1].extend(indices)
+                    continue
+
+        final_rows.append(indices)
+
+    return final_rows
 
 
 def vertical_clustering_dbscan(
@@ -424,11 +516,14 @@ def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: 
                                   f"{int(max_x)},{int(max_y)} {int(min_x)},{int(max_y)}"
                         orphan_region.set_Coords(CoordsType(points=pts_str))
                     else:
-                        continue
+                        # Last resort: use a small default region
+                        continue  # Skip if we can't determine coordinates
 
                 # Mark as unassigned with special role values
-                # roles = RolesType(TableCellRole=TableCellRoleType(rowIndex=-1, columnIndex=-1))
-                # orphan_region.set_Roles(roles)
+                roles = RolesType(TableCellRole=TableCellRoleType(
+                    rowIndex=-1, columnIndex=-1
+                ))
+                orphan_region.set_Roles(roles)
 
                 # Add custom attribute to identify this as containing an unassigned line
                 orphan_region.set_custom("unassigned_line=true")
