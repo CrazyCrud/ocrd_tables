@@ -3,7 +3,9 @@
 > ocrd_tables is an OCR‑D compliant workspace processor that tries to conduct table structures by combining column as well as text line detection results.
 > 
 > The row clustering is based on "[ClusTi: Clustering Method for Table Structure Recognition in Scanned Images](https://link.springer.com/article/10.1007/s11036-021-01759-9)".
-     
+
+**TextLine** as well as column elements (**TextRegion with the custom attribute set to "column"**) can be generated using the [YOLO extension of OCRD-D](https://github.com/CrazyCrud/ocrd_yolo).
+       
 _Disclaimer_: Work in progeress
 
 ## Installation
