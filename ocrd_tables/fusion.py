@@ -387,45 +387,61 @@ def fuse_page(cols_doc: PcGtsType, lines_doc: PcGtsType, params: dict, page_id: 
                     remaining_lines = reg.get_TextLine() if reg.get_TextLine() else []
 
                     if remaining_lines:
-                        # Collect orphaned TextLines
+                        # Collect orphaned TextLines with their original region
                         for tl in remaining_lines:
-                            orphaned_textlines.append(tl)
+                            orphaned_textlines.append((tl, reg))
                         # Clear the lines from this region
                         reg.set_TextLine([])
 
                     # Mark for removal
                     regions_to_remove.append(reg)
 
-        # If there are orphaned TextLines, create a special region for them
+        # Create individual TextRegions for each orphaned TextLine
         if orphaned_textlines and handle_orphaned_lines:
-            # Create an "unassigned" cell at the bottom of the table
-            # This preserves the TextLines that couldn't be assigned to proper cells
-            orphan_region = TextRegionType()
-            orphan_region.id = f"{getattr(tbl, 'id', 'table')}_unassigned"
+            for idx, (tl, orig_reg) in enumerate(orphaned_textlines):
+                # Create a new TextRegion for this specific TextLine
+                orphan_region = TextRegionType()
+                tl_id = getattr(tl, 'id', f'line_{idx}')
+                orphan_region.id = f"{tl_id}_region"
 
-            # Give it minimal coordinates (could be improved to encompass actual lines)
-            orphan_coords = coords_from_poly(tbl_poly)
-            orphan_region.set_Coords(orphan_coords)
+                # Get the TextLine's coordinates to create a tight-fitting region
+                tl_coords = tl.get_Coords()
+                if tl_coords:
+                    # Use the TextLine's own coordinates for the region
+                    orphan_region.set_Coords(tl_coords)
+                else:
+                    # Fallback: try to get from baseline or create minimal coords
+                    baseline = tl.get_Baseline()
+                    if baseline and baseline.get_points():
+                        pts = [(pt.x, pt.y) for pt in baseline.get_points()]
+                        # Create a small box around the baseline
+                        min_x = min(p[0] for p in pts)
+                        max_x = max(p[0] for p in pts)
+                        min_y = min(p[1] for p in pts) - 10
+                        max_y = max(p[1] for p in pts) + 10
 
-            # Optionally add a role to indicate these are unassigned
-            # Using row=-1, column=-1 to indicate unassigned status
-            roles = RolesType(TableCellRole=TableCellRoleType(
-                rowIndex=-1, columnIndex=-1
-            ))
-            orphan_region.set_Roles(roles)
+                        pts_str = f"{int(min_x)},{int(min_y)} {int(max_x)},{int(min_y)} " \
+                                  f"{int(max_x)},{int(max_y)} {int(min_x)},{int(max_y)}"
+                        orphan_region.set_Coords(CoordsType(points=pts_str))
+                    else:
+                        continue
 
-            # Add custom attribute to identify this as containing unassigned lines
-            orphan_region.set_custom("unassigned_lines=true")
+                # Mark as unassigned with special role values
+                # roles = RolesType(TableCellRole=TableCellRoleType(rowIndex=-1, columnIndex=-1))
+                # orphan_region.set_Roles(roles)
 
-            # Add all orphaned TextLines to this region
-            for tl in orphaned_textlines:
+                # Add custom attribute to identify this as containing an unassigned line
+                orphan_region.set_custom("unassigned_line=true")
+
+                # Add the single TextLine to this region
                 orphan_region.add_TextLine(tl)
 
-            # Add the orphan region to the table
-            tbl.add_TextRegion(orphan_region)
+                # Add the orphan region to the table
+                tbl.add_TextRegion(orphan_region)
 
-            print(f"Info: Created unassigned region with {len(orphaned_textlines)} "
-                  f"TextLines that couldn't be assigned to cells")
+            if orphaned_textlines:
+                print(f"Info: Created {len(orphaned_textlines)} individual regions for "
+                      f"unassigned TextLines")
 
         # Remove the now-empty source regions
         for reg in regions_to_remove:
